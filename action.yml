@@ -1,0 +1,130 @@
+name: 'Gerion Security Scan'
+description: 'Run SAST, SCA, IaC, and secrets scanning with Gerion CLI'
+author: 'gerion-appsec'
+
+branding:
+  icon: 'shield'
+  color: 'blue'
+
+inputs:
+  scan-type:
+    description: 'Type of scan to run. Options: all, secrets, sca, iac, sast'
+    required: false
+    default: 'all'
+
+  code-path:
+    description: 'Path to the directory to scan, relative to GITHUB_WORKSPACE'
+    required: false
+    default: '.'
+
+  api-url:
+    description: 'Gerion API Gateway base URL. If not set, results are not sent to the API.'
+    required: false
+    default: ''
+
+  api-key:
+    description: 'Gerion M2M API key. Required when api-url is set.'
+    required: false
+    default: ''
+
+  output-format:
+    description: 'Output format for local artifact. Options: json, markdown, sarif. Leave empty to skip file output.'
+    required: false
+    default: ''
+
+  output-file:
+    description: 'Output file path relative to GITHUB_WORKSPACE. Required when output-format is set.'
+    required: false
+    default: ''
+
+  log-level:
+    description: 'Log verbosity. Options: debug, info, warning, error'
+    required: false
+    default: 'info'
+
+  timeout:
+    description: 'Per-scanner timeout in seconds.'
+    required: false
+    default: '180'
+
+outputs:
+  findings-file:
+    description: 'Absolute path to the findings output file (only set when output-file is provided).'
+    value: ${{ steps.scan.outputs.findings-file }}
+
+  exit-code:
+    description: 'Exit code from the Gerion CLI (0 = success, 1 = execution error).'
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: 'composite'
+
+  steps:
+    - name: Run Gerion CLI
+      id: scan
+      shell: bash
+      env:
+        GERION_API_URL: ${{ inputs.api-url }}
+        GERION_API_KEY: ${{ inputs.api-key }}
+      run: |
+        IMAGE="ghcr.io/gerion-appsec/gerion-cli:latest"
+
+        # Resolve the scan command
+        # Note: inside the Docker image the binary is 'gerion' (ENTRYPOINT).
+        # Arguments are passed directly after the image name.
+        case "${{ inputs.scan-type }}" in
+          all)     SCAN_CMD="scan-all" ;;
+          secrets) SCAN_CMD="secrets-scan" ;;
+          sca)     SCAN_CMD="sca-scan" ;;
+          iac)     SCAN_CMD="iac-scan" ;;
+          sast)    SCAN_CMD="sast-scan" ;;
+          *)
+            echo "::error::Unknown scan-type '${{ inputs.scan-type }}'. Valid options: all, secrets, sca, iac, sast"
+            exit 1
+            ;;
+        esac
+
+        # Resolve code path (absolute)
+        CODE_PATH="${GITHUB_WORKSPACE}/${{ inputs.code-path }}"
+        CODE_PATH="$(realpath "$CODE_PATH")"
+
+        # Build optional flags
+        EXTRA_FLAGS=""
+
+        if [ -n "${{ inputs.output-format }}" ]; then
+          EXTRA_FLAGS="$EXTRA_FLAGS --format ${{ inputs.output-format }}"
+        fi
+
+        if [ -n "${{ inputs.output-file }}" ]; then
+          EXTRA_FLAGS="$EXTRA_FLAGS --output-file /code/${{ inputs.output-file }}"
+          echo "findings-file=${GITHUB_WORKSPACE}/${{ inputs.output-file }}" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [ -n "$GERION_API_URL" ]; then
+          EXTRA_FLAGS="$EXTRA_FLAGS --api-url $GERION_API_URL"
+        fi
+
+        if [ -n "$GERION_API_KEY" ]; then
+          EXTRA_FLAGS="$EXTRA_FLAGS --api-key $GERION_API_KEY"
+        fi
+
+        EXTRA_FLAGS="$EXTRA_FLAGS --log-level ${{ inputs.log-level }}"
+        EXTRA_FLAGS="$EXTRA_FLAGS --timeout ${{ inputs.timeout }}"
+
+        # Run the scan — arguments are passed to the 'gerion' ENTRYPOINT
+        docker run --rm \
+          -v "${CODE_PATH}:/code" \
+          -e GITHUB_REPOSITORY \
+          -e GITHUB_REF_NAME \
+          -e GITHUB_HEAD_REF \
+          -e GITHUB_SHA \
+          -e GITHUB_ACTOR \
+          -e GITHUB_RUN_ATTEMPT \
+          -e GITHUB_SERVER_URL \
+          -e GITHUB_WORKSPACE=/code \
+          "$IMAGE" \
+          "$SCAN_CMD" /code $EXTRA_FLAGS
+
+        EXIT_CODE=$?
+        echo "exit-code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        exit $EXIT_CODE
