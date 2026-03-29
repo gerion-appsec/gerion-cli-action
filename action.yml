@@ -112,7 +112,7 @@ runs:
         EXTRA_FLAGS="$EXTRA_FLAGS --timeout ${{ inputs.timeout }}"
 
         # Run the scan — arguments are passed to the 'gerion' ENTRYPOINT
-        docker run --rm \
+        docker run --rm --user $(id -u):$(id -g) \
           -v "${CODE_PATH}:/code" \
           -e GITHUB_REPOSITORY \
           -e GITHUB_REF_NAME \
